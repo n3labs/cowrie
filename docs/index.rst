@@ -10,12 +10,15 @@ Welcome to Cowrie's documentation!
    :maxdepth: 2
    :caption: Contents:
 
-   index.rst
    README.rst
+   FAQ.rst
    LICENSE.rst
    INSTALL.rst
    CHANGELOG.rst
    CONTRIBUTING.rst
+   PROXY.rst
+   BACKEND_POOL.rst
+   SNAPSHOTS.rst
    elk/README.rst
    graylog/README.rst
    kippo-graph/README.rst
@@ -23,6 +26,7 @@ Welcome to Cowrie's documentation!
    sql/README.rst
    squid/README.rst
    supervisor/README.rst
+   systemd/README.rst
 
 Indices and tables
 ==================

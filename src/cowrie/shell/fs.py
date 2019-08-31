@@ -18,15 +18,6 @@ import time
 
 from twisted.python import log
 
-from cowrie.core.config import CONFIG
-
-# At the moment this is the first place a config file is used
-# Put extra help here in case it goes wrong
-try:
-    PICKLE = pickle.load(open(CONFIG.get('shell', 'filesystem'), 'rb'), encoding='utf8')
-except Exception as e:
-    print("ERROR: Failed to load filesystem: ", e)
-    exit(2)
 
 A_NAME, A_TYPE, A_UID, A_GID, A_SIZE, A_MODE, A_CTIME, A_CONTENTS, A_TARGET, A_REALFILE = list(range(0, 10))
 T_LINK, T_DIR, T_FILE, T_BLK, T_CHR, T_SOCK, T_FIFO = list(range(0, 7))
@@ -81,7 +72,16 @@ class PermissionDenied(Exception):
 class HoneyPotFilesystem(object):
 
     def __init__(self, fs, arch):
-        self.fs = fs
+
+        try:
+            with open(CowrieConfig().get('shell', 'filesystem'), 'rb') as f:
+                self.fs = pickle.load(f)
+        except UnicodeDecodeError:
+            with open(CowrieConfig().get('shell', 'filesystem'), 'rb') as f:
+                self.fs = pickle.load(f, encoding='utf8')
+        except Exception as e:
+            log.err(e, "ERROR: Failed to load filesystem")
+            exit(2)
 
         # Keep track of arch so we can return appropriate binary
         self.arch = arch
@@ -95,7 +95,7 @@ class HoneyPotFilesystem(object):
 
         # Get the honeyfs path from the config file and explore it for file
         # contents:
-        self.init_honeyfs(CONFIG.get('honeypot', 'contents_path'))
+        self.init_honeyfs(CowrieConfig().get('honeypot', 'contents_path'))
 
     def init_honeyfs(self, honeyfs_path):
         """
@@ -263,7 +263,7 @@ class HoneyPotFilesystem(object):
             # but it's likely better to return nothing than suspiciously fail.)
             return ''
         elif f[A_TYPE] == T_FILE and f[A_MODE] & stat.S_IXUSR:
-            return open(CONFIG.get('honeypot', 'share_path') + '/arch/' + self.arch, 'rb').read()
+            return open(CowrieConfig().get('honeypot', 'share_path') + '/arch/' + self.arch, 'rb').read()
 
     def mkfile(self, path, uid, gid, size, mode, ctime=None):
         if self.newcount > 10000:
@@ -366,7 +366,7 @@ class HoneyPotFilesystem(object):
             # strip executable bit
             hostmode = mode & ~(111)
             hostfile = '%s/%s_sftp_%s' % (
-                CONFIG.get('honeypot', 'download_path'),
+                CowrieConfig().get('honeypot', 'download_path'),
                 time.strftime('%Y%m%d-%H%M%S'),
                 re.sub('[^A-Za-z0-9]', '_', filename)
             )
@@ -394,7 +394,7 @@ class HoneyPotFilesystem(object):
             return True
         if self.tempfiles[fd] is not None:
             shasum = hashlib.sha256(open(self.tempfiles[fd], 'rb').read()).hexdigest()
-            shasumfile = CONFIG.get('honeypot', 'download_path') + "/" + shasum
+            shasumfile = CowrieConfig().get('honeypot', 'download_path') + "/" + shasum
             if (os.path.exists(shasumfile)):
                 os.remove(self.tempfiles[fd])
             else:

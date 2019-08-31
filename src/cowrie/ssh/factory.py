@@ -15,11 +15,13 @@ from twisted.conch.ssh import factory
 from twisted.conch.ssh import keys
 from twisted.python import log
 
-from cowrie.core.config import CONFIG
+from cowrie.core.config import CowrieConfig
 from cowrie.ssh import connection
 from cowrie.ssh import keys as cowriekeys
-from cowrie.ssh import transport
-from cowrie.ssh import userauth
+from cowrie.ssh import transport as shellTransport
+from cowrie.ssh.userauth import HoneyPotSSHUserAuthServer
+from cowrie.ssh_proxy import server_transport as proxyTransport
+from cowrie.ssh_proxy.userauth import ProxySSHAuthServer
 
 
 class CowrieSSHFactory(factory.SSHFactory):
@@ -28,15 +30,25 @@ class CowrieSSHFactory(factory.SSHFactory):
     They listen directly to the TCP port
     """
 
-    services = {
-        b'ssh-userauth': userauth.HoneyPotSSHUserAuthServer,
-        b'ssh-connection': connection.CowrieSSHConnection,
-    }
     starttime = None
     privateKeys = None
     publicKeys = None
     primes = None
     tac = None  # gets set later
+    ourVersionString = CowrieConfig().get('ssh', 'version',
+                                          fallback='SSH-2.0-OpenSSH_6.0p1 Debian-4+deb7u2')
+
+    # used to kill server instances of the protocol on tests
+    running = []
+
+    def __init__(self, backend, pool_handler):
+        self.pool_handler = pool_handler
+        self.backend = backend
+        self.services = {
+            b'ssh-userauth': ProxySSHAuthServer if self.backend == 'proxy' else HoneyPotSSHUserAuthServer,
+            b'ssh-connection': connection.CowrieSSHConnection,
+        }
+        super().__init__()
 
     def logDispatch(self, *msg, **args):
         """
@@ -70,10 +82,8 @@ class CowrieSSHFactory(factory.SSHFactory):
             except IOError:
                 pass
 
-        try:
-            self.ourVersionString = CONFIG.get('ssh', 'version')
-        except NoOptionError:
-            self.ourVersionString = 'SSH-2.0-OpenSSH_6.0p1 Debian-4+deb7u2'
+        # this can come from backend in the future, check HonSSH's slim client
+        self.ourVersionString = CowrieConfig().get('ssh', 'version', fallback='SSH-2.0-OpenSSH_6.0p1 Debian-4+deb7u2')
 
         factory.SSHFactory.startFactory(self)
         log.msg("Ready to accept SSH connections")
@@ -91,8 +101,10 @@ class CowrieSSHFactory(factory.SSHFactory):
         @rtype: L{cowrie.ssh.transport.HoneyPotSSHTransport}
         @return: The built transport.
         """
-
-        t = transport.HoneyPotSSHTransport()
+        if self.backend == 'proxy':
+            t = proxyTransport.FrontendSSHTransport()
+        else:
+            t = shellTransport.HoneyPotSSHTransport()
 
         t.ourVersionString = self.ourVersionString
         t.supportedPublicKeys = list(self.privateKeys.keys())
@@ -107,21 +119,49 @@ class CowrieSSHFactory(factory.SSHFactory):
                 log.msg("No moduli, no diffie-hellman-group-exchange-sha256")
             t.supportedKeyExchanges = ske
 
-        # Reorder supported ciphers to resemble current openssh more
-        t.supportedCiphers = [
-            b'aes128-ctr',
-            b'aes192-ctr',
-            b'aes256-ctr',
-            b'aes128-cbc',
-            b'3des-cbc',
-            b'blowfish-cbc',
-            b'cast128-cbc',
-            b'aes192-cbc',
-            b'aes256-cbc'
-        ]
+        try:
+            t.supportedCiphers = [i.encode('utf-8') for i in CowrieConfig().get('ssh', 'ciphers').split(',')]
+        except NoOptionError:
+            # Reorder supported ciphers to resemble current openssh more
+            t.supportedCiphers = [
+                b'aes128-ctr',
+                b'aes192-ctr',
+                b'aes256-ctr',
+                b'aes256-cbc',
+                b'aes192-cbc',
+                b'aes128-cbc',
+                b'3des-cbc',
+                b'blowfish-cbc',
+                b'cast128-cbc',
+            ]
+
+        try:
+            t.supportedMACs = [i.encode('utf-8') for i in CowrieConfig().get('ssh', 'macs').split(',')]
+        except NoOptionError:
+            # SHA1 and MD5 are considered insecure now. Use better algos
+            # like SHA-256 and SHA-384
+            t.supportedMACs = [
+                    b'hmac-sha2-512',
+                    b'hmac-sha2-384',
+                    b'hmac-sha2-256',
+                    b'hmac-sha1',
+                    b'hmac-md5'
+                ]
+
+        try:
+            t.supportedCompressions = [i.encode('utf-8') for i in CowrieConfig().get('ssh', 'compression').split(',')]
+        except NoOptionError:
+            t.supportedCompressions = [b'zlib@openssh.com', b'zlib', b'none']
+
+        # TODO: Newer versions of SSH will use ECDSA keys too as mentioned
+        # at https://tools.ietf.org/html/draft-miller-ssh-agent-02#section-4.2.2
+        #
+        # Twisted only supports below two keys
         t.supportedPublicKeys = [b'ssh-rsa', b'ssh-dss']
-        t.supportedMACs = [b'hmac-md5', b'hmac-sha1']
-        t.supportedCompressions = [b'zlib@openssh.com', b'zlib', b'none']
 
         t.factory = self
+
+        # for testing purposes
+        self.running.append(t)
+
         return t
